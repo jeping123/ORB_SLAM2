@@ -23,6 +23,10 @@
 #include "ORBmatcher.h"
 #include "Optimizer.h"
 
+#include <Eigen/Dense>
+#include <iostream>
+#include <opencv2/core/eigen.hpp>
+
 #include<mutex>
 
 namespace ORB_SLAM2
@@ -42,6 +46,64 @@ void LocalMapping::SetLoopCloser(LoopClosing* pLoopCloser)
 void LocalMapping::SetTracker(Tracking *pTracker)
 {
     mpTracker=pTracker;
+}
+
+void LocalMapping::doLocalMapping()
+{
+    // Tracking will see that Local Mapping is busy
+    SetAcceptKeyFrames(false);
+
+    // Check if there are keyframes in the queue
+    if(CheckNewKeyFrames())
+    {
+        // BoW conversion and insertion in Map
+        ProcessNewKeyFrame();
+
+        // Check recent MapPoints
+        MapPointCulling();
+
+        // Triangulate new MapPoints
+        CreateNewMapPoints();
+        printf("CreateNewMapPoints end\n");
+
+        if(!CheckNewKeyFrames())
+        {
+            // Find more matches in neighbor keyframes and fuse point duplications
+            SearchInNeighbors();
+        }
+
+        mbAbortBA = false;
+
+        if(!CheckNewKeyFrames() && !stopRequested())
+        {
+            // Local BA
+            if(mpMap->KeyFramesInMap()>2)
+                Optimizer::LocalBundleAdjustment(mpCurrentKeyFrame,&mbAbortBA, mpMap);
+
+            // Check redundant local Keyframes
+            KeyFrameCulling();
+        }
+
+        mpLoopCloser->InsertKeyFrame(mpCurrentKeyFrame);
+    }
+    else if(Stop())
+    {
+        // Safe area to stop
+        while(isStopped() && !CheckFinish())
+        {
+            usleep(3000);
+        }
+        if(CheckFinish())
+            return;
+    }
+
+    ResetIfRequested();
+
+    // Tracking will see that Local Mapping is busy
+    SetAcceptKeyFrames(true);
+
+    if(CheckFinish())
+        return;
 }
 
 void LocalMapping::Run()
@@ -65,6 +127,7 @@ void LocalMapping::Run()
 
             // Triangulate new MapPoints
             CreateNewMapPoints();
+            printf("CreateNewMapPoints end\n");
 
             if(!CheckNewKeyFrames())
             {
@@ -165,6 +228,7 @@ void LocalMapping::ProcessNewKeyFrame()
 
     // Insert Keyframe in Map
     mpMap->AddKeyFrame(mpCurrentKeyFrame);
+    printf("mpMap->AddKeyFrame(mpCurrentKeyFrame):%f\n", mpCurrentKeyFrame->mTimeStamp);
 }
 
 void LocalMapping::MapPointCulling()
@@ -283,6 +347,26 @@ void LocalMapping::CreateNewMapPoints()
 
         // Triangulate each match
         const int nmatches = vMatchedIndices.size();
+#ifdef DDEBUG_MODE
+        const int cols = pKF2->imGray.cols;
+        cv::Mat imTrack;
+        if (pKF2->imGray.empty())
+            printf("pKF2.imGray_ empty\n");
+        cv::Mat imLeft = pKF2->imGray.clone();
+        cv::Mat imRight = mpCurrentKeyFrame->imGray.clone();
+        if (mpCurrentKeyFrame->imGray.empty())
+            printf("CurrentFrame.imGray_ empty\n");
+        if (!imRight.empty())
+            cv::hconcat(imLeft, imRight, imTrack);
+        cv::cvtColor(imTrack, imTrack, CV_GRAY2RGB);
+#endif
+        int valid_matches = 0;
+        int removed_by_project_error_cur = 0;
+        int removed_by_project_error_ref = 0;
+        int removed_by_z_cur = 0;
+        int removed_by_z_ref = 0;
+        int removed_by_scale = 0;
+        int removed_by_parallax = 0;
         for(int ikp=0; ikp<nmatches; ikp++)
         {
             const int &idx1 = vMatchedIndices[ikp].first;
@@ -295,12 +379,21 @@ void LocalMapping::CreateNewMapPoints()
             const cv::KeyPoint &kp2 = pKF2->mvKeysUn[idx2];
             const float kp2_ur = pKF2->mvuRight[idx2];
             bool bStereo2 = kp2_ur>=0;
+#ifdef DDEBUG_MODE
+            cv::Point2f rightPt = kp1.pt;
+            rightPt.x += cols;
+            cv::circle(imTrack, rightPt, 2, cv::Scalar(255, 0, 0), 2);
 
-            // Check parallax between rays
+            cv::Point2f leftPt = kp2.pt;
+            cv::circle(imTrack, leftPt, 2, cv::Scalar(255, 0, 0), 2);
+            cv::line(imTrack, leftPt, rightPt, cv::Scalar(0, 255, 0), 1, 8, 0);
+#endif
+
+            // Check parallax between rays 点在相机坐标系的位置
             cv::Mat xn1 = (cv::Mat_<float>(3,1) << (kp1.pt.x-cx1)*invfx1, (kp1.pt.y-cy1)*invfy1, 1.0);
             cv::Mat xn2 = (cv::Mat_<float>(3,1) << (kp2.pt.x-cx2)*invfx2, (kp2.pt.y-cy2)*invfy2, 1.0);
 
-            cv::Mat ray1 = Rwc1*xn1;
+            cv::Mat ray1 = Rwc1*xn1;//Rwc1 世界坐标系到相机坐标系
             cv::Mat ray2 = Rwc2*xn2;
             const float cosParallaxRays = ray1.dot(ray2)/(cv::norm(ray1)*cv::norm(ray2));
 
@@ -345,19 +438,25 @@ void LocalMapping::CreateNewMapPoints()
             {
                 x3D = pKF2->UnprojectStereo(idx2);
             }
-            else
+            else {
+                removed_by_parallax++;
                 continue; //No stereo and very low parallax
+            }
 
             cv::Mat x3Dt = x3D.t();
 
             //Check triangulation in front of cameras
             float z1 = Rcw1.row(2).dot(x3Dt)+tcw1.at<float>(2);
-            if(z1<=0)
+            if(z1<=0) {
+                removed_by_z_cur++;
                 continue;
+            }
 
             float z2 = Rcw2.row(2).dot(x3Dt)+tcw2.at<float>(2);
-            if(z2<=0)
+            if(z2<=0) {
+                removed_by_z_ref++;
                 continue;
+            }
 
             //Check reprojection error in first keyframe
             const float &sigmaSquare1 = mpCurrentKeyFrame->mvLevelSigma2[kp1.octave];
@@ -371,8 +470,10 @@ void LocalMapping::CreateNewMapPoints()
                 float v1 = fy1*y1*invz1+cy1;
                 float errX1 = u1 - kp1.pt.x;
                 float errY1 = v1 - kp1.pt.y;
-                if((errX1*errX1+errY1*errY1)>5.991*sigmaSquare1)
+                if((errX1*errX1+errY1*errY1)>5.991*sigmaSquare1) {
+                    removed_by_project_error_cur++;
                     continue;
+                }
             }
             else
             {
@@ -397,8 +498,10 @@ void LocalMapping::CreateNewMapPoints()
                 float v2 = fy2*y2*invz2+cy2;
                 float errX2 = u2 - kp2.pt.x;
                 float errY2 = v2 - kp2.pt.y;
-                if((errX2*errX2+errY2*errY2)>5.991*sigmaSquare2)
+                if((errX2*errX2+errY2*errY2)>5.991*sigmaSquare2) {
+                    removed_by_project_error_ref++;
                     continue;
+                }
             }
             else
             {
@@ -427,12 +530,19 @@ void LocalMapping::CreateNewMapPoints()
 
             /*if(fabs(ratioDist-ratioOctave)>ratioFactor)
                 continue;*/
-            if(ratioDist*ratioFactor<ratioOctave || ratioDist>ratioOctave*ratioFactor)
+            if(ratioDist*ratioFactor<ratioOctave || ratioDist>ratioOctave*ratioFactor) {
+                removed_by_scale++;
                 continue;
+            }
 
             // Triangulation is succesfull
             MapPoint* pMP = new MapPoint(x3D,mpCurrentKeyFrame,mpMap);
-
+#ifdef DDEBUG_MODE
+            cv::circle(imTrack, rightPt, 2, cv::Scalar(0, 0, 255), 2);
+            cv::circle(imTrack, leftPt, 2, cv::Scalar(0, 0, 255), 2);
+            cv::line(imTrack, leftPt, rightPt, cv::Scalar(0, 255, 0), 1, 8, 0);
+            valid_matches++;
+#endif
             pMP->AddObservation(mpCurrentKeyFrame,idx1);            
             pMP->AddObservation(pKF2,idx2);
 
@@ -448,7 +558,24 @@ void LocalMapping::CreateNewMapPoints()
 
             nnew++;
         }
+#ifdef DDEBUG_MODE
+        string save_Name = "/home/jep/c/" + to_string(mpCurrentKeyFrame->mTimeStamp) + "_" + to_string(pKF2->mTimeStamp) + ".png";
+        cv::imwrite(save_Name, imTrack.clone());
+        printf("%d,%f: all matches:%d, z:%d,%d, reproject:%d,%d, scale:%d, parallax:%d, add mappoints size:%d\n",
+                i, pKF2->mTimeStamp, nmatches,
+                removed_by_z_cur, removed_by_z_ref,
+                removed_by_project_error_cur, removed_by_project_error_ref,
+                removed_by_scale, removed_by_parallax,
+                valid_matches);
+        Eigen::Matrix3d R;
+        cv::cv2eigen(Rwc2*Rcw1, R);
+        Eigen::Quaterniond q(R);
+        Eigen::Vector3d t;
+        cv::cv2eigen(tcw1 - tcw2, t);
+        printf("   q:%f,%f,%f,%f t:%f,%f,%f\n", q.x(),q.y(), q.z(), q.w(), t(0), t(1), t(2));
+#endif
     }
+    printf("add new mappoints size:%d\n", nnew);
 }
 
 void LocalMapping::SearchInNeighbors()

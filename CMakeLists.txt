@@ -38,6 +38,7 @@ endif()
 
 find_package(Eigen3 3.1.0 REQUIRED)
 find_package(Pangolin REQUIRED)
+add_definitions("-DDEBUG_MODE")
 
 include_directories(
 ${PROJECT_SOURCE_DIR}

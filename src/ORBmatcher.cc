@@ -1347,7 +1347,20 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, 
 
     const bool bForward = tlc.at<float>(2)>CurrentFrame.mb && !bMono;
     const bool bBackward = -tlc.at<float>(2)>CurrentFrame.mb && !bMono;
-
+#ifdef DDEBUG_MODE
+    printf("mTimeStamp:%f: \n", CurrentFrame.mTimeStamp);
+    const int cols = LastFrame.imGray_.cols;
+    if (LastFrame.imGray_.empty())
+        printf("LastFrame.imGray_ empty\n");
+    cv::Mat imLeft = LastFrame.imGray_.clone();
+    cv::Mat imRight = CurrentFrame.imGray_.clone();
+    if (CurrentFrame.imGray_.empty())
+        printf("CurrentFrame.imGray_ empty\n");
+    if (!imRight.empty())
+        cv::hconcat(imLeft, imRight, imTrack);
+    cv::cvtColor(imTrack, imTrack, CV_GRAY2RGB);
+#endif
+    std::map<int,int> match_paires;
     for(int i=0; i<LastFrame.N; i++)
     {
         MapPoint* pMP = LastFrame.mvpMapPoints[i];
@@ -1439,6 +1452,7 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, 
                         assert(bin>=0 && bin<HISTO_LENGTH);
                         rotHist[bin].push_back(bestIdx2);
                     }
+                    match_paires[bestIdx2] = i;
                 }
             }
         }
@@ -1465,7 +1479,24 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, 
             }
         }
     }
+#ifdef DDEBUG_MODE
+    for (int k = 0; k < CurrentFrame.mvpMapPoints.size(); ++k) {
+        if (CurrentFrame.mvpMapPoints[k]) {
+            int j = match_paires[k];
 
+            cv::Point2f rightPt = CurrentFrame.mvKeysUn[k].pt;
+            rightPt.x += cols;
+            cv::circle(imTrack, rightPt, 2, cv::Scalar(0, 255, 0), 2);
+
+            cv::Point2f leftPt = LastFrame.mvKeysUn[j].pt;
+            cv::circle(imTrack, leftPt, 2, cv::Scalar(255, 0, 0), 2);
+            cv::line(imTrack, leftPt, rightPt, cv::Scalar(0, 255, 0), 1, 8, 0);
+        }
+    }
+
+    string save_Name = "/home/jep/b/" + to_string(LastFrame.mTimeStamp) + "_" + to_string(CurrentFrame.mTimeStamp) + ".png";
+    cv::imwrite(save_Name, imTrack.clone());
+#endif
     return nmatches;
 }
 

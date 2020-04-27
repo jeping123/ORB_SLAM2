@@ -49,6 +49,8 @@ public:
     // Main function
     void Run();
 
+    void doLocalMapping();
+
     void InsertKeyFrame(KeyFrame* pKF);
 
     // Thread Synch

@@ -48,9 +48,9 @@ int main(int argc, char **argv)
     ros::init(argc, argv, "Mono");
     ros::start();
 
-    if(argc != 3)
+    if(argc != 4)
     {
-        cerr << endl << "Usage: rosrun ORB_SLAM2 Mono path_to_vocabulary path_to_settings" << endl;        
+        cerr << endl << "Usage: rosrun ORB_SLAM2 Mono path_to_vocabulary path_to_settings save_path" << endl;
         ros::shutdown();
         return 1;
     }    
@@ -61,7 +61,7 @@ int main(int argc, char **argv)
     ImageGrabber igb(&SLAM);
 
     ros::NodeHandle nodeHandler;
-    ros::Subscriber sub = nodeHandler.subscribe("/camera/image_raw", 1, &ImageGrabber::GrabImage,&igb);
+    ros::Subscriber sub = nodeHandler.subscribe("/cam0/image_raw", 1, &ImageGrabber::GrabImage,&igb);
 
     ros::spin();
 
@@ -69,8 +69,10 @@ int main(int argc, char **argv)
     SLAM.Shutdown();
 
     // Save camera trajectory
-    SLAM.SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
-
+    std::string save_path1 = std::string(argv[3]) + "/mono_CameraTrajectory.txt";
+    std::string save_path2 = std::string(argv[3]) + "/mono_KeyFrameTrajectory.txt";
+    SLAM.SaveKeyFrameTrajectoryTUM(save_path2);
+    SLAM.SaveTrajectoryTUM(save_path1);
     ros::shutdown();
 
     return 0;

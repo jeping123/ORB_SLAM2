@@ -214,6 +214,11 @@ protected:
     bool mbRGB;
 
     list<MapPoint*> mlpTemporalPoints;
+
+    // for debug
+    double all_time_cost = 0.f;
+    int all_frame_size = 0;
+    cv::Mat imTrack;
 };
 
 } //namespace ORB_SLAM

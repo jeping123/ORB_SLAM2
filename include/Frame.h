@@ -107,6 +107,7 @@ public:
 
     // Frame timestamp.
     double mTimeStamp;
+    cv::Mat imGray_;
 
     // Calibration matrix and OpenCV distortion parameters.
     cv::Mat mK;

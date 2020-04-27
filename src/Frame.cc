@@ -55,6 +55,7 @@ Frame::Frame(const Frame &frame)
 
     if(!frame.mTcw.empty())
         SetPose(frame.mTcw);
+    imGray_ = frame.imGray_.clone();
 }
 
 
@@ -175,6 +176,7 @@ Frame::Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extra
     :mpORBvocabulary(voc),mpORBextractorLeft(extractor),mpORBextractorRight(static_cast<ORBextractor*>(NULL)),
      mTimeStamp(timeStamp), mK(K.clone()),mDistCoef(distCoef.clone()), mbf(bf), mThDepth(thDepth)
 {
+    imGray_ = imGray.clone();
     // Frame ID
     mnId=nNextId++;
 
@@ -654,7 +656,6 @@ void Frame::ComputeStereoFromRGBD(const cv::Mat &imDepth)
         const float &u = kp.pt.x;
 
         const float d = imDepth.at<float>(v,u);
-
         if(d>0)
         {
             mvDepth[i] = d;

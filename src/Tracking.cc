@@ -237,7 +237,9 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
 
 cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp)
 {
-    mImGray = im;
+    printf("\nGrabImageMonocular input:%f**********************************\n", timestamp);
+    std::chrono::system_clock::time_point start_ = std::chrono::system_clock::now();
+    mImGray = im.clone();
 
     if(mImGray.channels()==3)
     {
@@ -261,6 +263,17 @@ cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp)
 
     Track();
 
+    if (mState == 2) {
+        auto end = std::chrono::system_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start_);
+        double t = double(duration.count()) * std::chrono::microseconds::period::num /
+                   std::chrono::microseconds::period::den;
+        printf("nGrabImageMonocular cost:%f ms\n", t * 1000);
+        all_time_cost += t;
+        all_frame_size++;
+        printf("all frame:%d, nGrabImageMonocular mean cost:%f ms\n", all_frame_size,
+               all_time_cost / all_frame_size * 1000);
+    }
     return mCurrentFrame.mTcw.clone();
 }
 
@@ -307,12 +320,16 @@ void Tracking::Track()
                 if(mVelocity.empty() || mCurrentFrame.mnId<mnLastRelocFrameId+2)
                 {
                     bOK = TrackReferenceKeyFrame();
+                    printf("mVelocity.empty(), TrackReferenceKeyFrame status:%d\n", bOK);
                 }
                 else
                 {
                     bOK = TrackWithMotionModel();
-                    if(!bOK)
+                    printf("TrackWithMotionModel status:%d\n", bOK);
+                    if(!bOK) {
                         bOK = TrackReferenceKeyFrame();
+                        printf("TrackReferenceKeyFrame status:%d\n", bOK);
+                    }
                 }
             }
             else
@@ -397,8 +414,10 @@ void Tracking::Track()
         // If we have an initial estimation of the camera pose and matching. Track the local map.
         if(!mbOnlyTracking)
         {
-            if(bOK)
+            if(bOK) {
                 bOK = TrackLocalMap();
+                printf("TrackLocalMap status:%d\n", bOK);
+            }
         }
         else
         {
@@ -411,8 +430,10 @@ void Tracking::Track()
 
         if(bOK)
             mState = OK;
-        else
+        else {
+            printf("************\n");
             mState=LOST;
+        }
 
         // Update drawer
         mpFrameDrawer->Update(this);
@@ -454,8 +475,10 @@ void Tracking::Track()
             mlpTemporalPoints.clear();
 
             // Check if we need to insert a new keyframe
-            if(NeedNewKeyFrame())
+            if(NeedNewKeyFrame()) {
+                printf("CreateNewKeyFrame\n");
                 CreateNewKeyFrame();
+            }
 
             // We allow points with high innovation (considererd outliers by the Huber Function)
             // pass to the new keyframe, so that bundle adjustment will finally decide
@@ -765,6 +788,7 @@ bool Tracking::TrackReferenceKeyFrame()
     vector<MapPoint*> vpMapPointMatches;
 
     int nmatches = matcher.SearchByBoW(mpReferenceKF,mCurrentFrame,vpMapPointMatches);
+    printf("TrackReferenceKeyFrame SearchByBoW find matches is:%d\n", nmatches);
 
     if(nmatches<15)
         return false;
@@ -795,6 +819,7 @@ bool Tracking::TrackReferenceKeyFrame()
         }
     }
 
+    printf("TrackReferenceKeyFrame SearchByBoW after Discard outliersmatches is:%d\n", nmatches);
     return nmatchesMap>=10;
 }
 
@@ -883,13 +908,16 @@ bool Tracking::TrackWithMotionModel()
     else
         th=7;
     int nmatches = matcher.SearchByProjection(mCurrentFrame,mLastFrame,th,mSensor==System::MONOCULAR);
+    printf("matcher.SearchByProjection size:%d\n", nmatches);
 
     // If few matches, uses a wider window search
     if(nmatches<20)
     {
         fill(mCurrentFrame.mvpMapPoints.begin(),mCurrentFrame.mvpMapPoints.end(),static_cast<MapPoint*>(NULL));
         nmatches = matcher.SearchByProjection(mCurrentFrame,mLastFrame,2*th,mSensor==System::MONOCULAR);
+        printf("matcher.SearchByProjection 2*th size:%d\n", nmatches);
     }
+    imTrack = matcher.imTrack.clone();
 
     if(nmatches<20)
         return false;
@@ -941,6 +969,9 @@ bool Tracking::TrackLocalMap()
     mnMatchesInliers = 0;
 
     // Update MapPoints Statistics
+    printf("mCurrentFrame.N:%d\n", mCurrentFrame.N);
+    int mappoints_size = 0;
+    int mvbOutlier_size = 0;
     for(int i=0; i<mCurrentFrame.N; i++)
     {
         if(mCurrentFrame.mvpMapPoints[i])
@@ -950,25 +981,37 @@ bool Tracking::TrackLocalMap()
                 mCurrentFrame.mvpMapPoints[i]->IncreaseFound();
                 if(!mbOnlyTracking)
                 {
-                    if(mCurrentFrame.mvpMapPoints[i]->Observations()>0)
+                    if(mCurrentFrame.mvpMapPoints[i]->Observations()>0) {
                         mnMatchesInliers++;
+                        cv::Point2f rightPt = mCurrentFrame.mvKeysUn[i].pt;
+                        rightPt.x += mLastFrame.imGray_.cols;
+                        cv::circle(imTrack, rightPt, 2, cv::Scalar(0, 0, 255), 2);
+                    }
                 }
                 else
                     mnMatchesInliers++;
+                mvbOutlier_size++;
             }
             else if(mSensor==System::STEREO)
                 mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
-
+            mappoints_size++;
         }
     }
+    printf("mappoints_size:%d, mvbOutlier_size:%d\n", mappoints_size, mvbOutlier_size);
+    string save_Name = "/home/jep/b/" + to_string(mLastFrame.mTimeStamp) + "_" + to_string(mCurrentFrame.mTimeStamp) + ".png";
+    cv::imwrite(save_Name, imTrack.clone());
 
     // Decide if the tracking was succesful
     // More restrictive if there was a relocalization recently
-    if(mCurrentFrame.mnId<mnLastRelocFrameId+mMaxFrames && mnMatchesInliers<50)
+    if(mCurrentFrame.mnId<mnLastRelocFrameId+mMaxFrames && mnMatchesInliers<50) {
+        printf("mCurrentFrame.mnId:%d,%d,%d,%d\n", mCurrentFrame.mnId, mnLastRelocFrameId, mMaxFrames, mnMatchesInliers);
         return false;
+    }
 
-    if(mnMatchesInliers<30)
+    if(mnMatchesInliers<30) {
+        printf("mnMatchesInliers :%d\n", mnMatchesInliers);
         return false;
+    }
     else
         return true;
 }
